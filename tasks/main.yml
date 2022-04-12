@@ -1,0 +1,70 @@
+---
+- name: Check if host is already reachable
+  wait_for:
+    host: "{{ fqdn }}"
+    port: 22
+    timeout: 1
+  ignore_errors: True
+  register: reachable
+  delegate_to: "{{ monitor_hostname }}"
+
+- name: Check if template host is reachable
+  wait_for:
+    host: "{{ template_hostname }}"
+    port: 22
+    timeout: 30
+  delegate_to: "{{ monitor_hostname }}"
+  when: reachable.failed
+
+- name: Set hostname
+  hostname:
+    name: "{{ inventory_hostname }}"
+  become: True
+  delegate_to: "{{ template_hostname }}"
+  register: hostname_update
+  when: reachable.failed
+
+- name: Configure hostname in /etc/hosts
+  lineinfile:
+    line: "127.0.1.1 {{ fqdn }} {{ inventory_hostname }}"
+    regexp: "^127.0.1.1"
+    path: /etc/hosts
+  become: True
+  delegate_to: "{{ template_hostname }}"
+  when: reachable.failed # and hostname_update.changed
+
+- include_tasks: tasks/recreate_ssh_host_key.yml
+  vars:
+    key_path: "/etc/ssh/"
+  loop: "{{ ssh_key_types }}"
+  loop_control:
+    loop_var: key_type
+
+- setup:
+  delegate_to: "{{ template_hostname }}"
+  when: reachable.failed
+
+- include_role:
+    name: nbuchwitz.users
+    apply:
+      become: True
+      delegate_to: "{{ template_hostname }}"
+  when: reachable.failed
+
+- name: Reboot to apply new hostname
+  reboot:
+    connect_timeout: 0
+    reboot_timeout: 0
+  ignore_errors: True
+  become: True
+  delegate_to: "{{ template_hostname }}"
+  when: reachable.failed #hostname_update.changed
+
+- name: Wait for host after reboot
+  wait_for:
+    host: "{{ fqdn }}"
+    port: 22
+    timeout: 30
+  register: reachable
+  delegate_to: "{{ monitor_hostname }}"
+
